@@ -1,6 +1,8 @@
 """Support for OpenAI gpt-5 model family."""
 
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union, cast
+
+import httpx
 
 import litellm
 from litellm.constants import (
@@ -14,11 +16,13 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
 )
 from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.types.llms.openai import (
+    AllMessageValues,
     ChatCompletionRedactedThinkingBlock,
     ChatCompletionThinkingBlock,
     OpenAIChatCompletionChoices,
 )
-from litellm.types.utils import Choices, Message
+from litellm.types.utils import Choices, Message, ModelResponse, StreamingChoices
+from litellm.utils import convert_to_model_response_object
 
 from .gpt_transformation import OpenAIGPTConfig
 
@@ -209,3 +213,50 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
             model=model,
             drop_params=drop_params,
         )
+
+    def transform_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        model_response: ModelResponse,
+        logging_obj: Any,
+        request_data: dict,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        encoding: Any,
+        api_key: Optional[str] = None,
+        json_mode: Optional[bool] = None,
+    ) -> ModelResponse:
+        """
+        Override to add thinking_blocks conversion after response parsing.
+        
+        This ensures reasoning_content from GPT-5 is converted to thinking_blocks
+        for Claude API compatibility.
+        """
+        # Get base transformation
+        model_response = super().transform_response(
+            model=model,
+            raw_response=raw_response,
+            model_response=model_response,
+            logging_obj=logging_obj,
+            request_data=request_data,
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            encoding=encoding,
+            api_key=api_key,
+            json_mode=json_mode,
+        )
+        
+        # Add thinking_blocks conversion for each choice (non-streaming only)
+        for choice in model_response.choices:
+            # Type check: ensure this is a non-streaming Choices object
+            if isinstance(choice, Choices) and choice.message:
+                if hasattr(choice.message, 'reasoning_content') and choice.message.reasoning_content:
+                    # Convert OpenAI's reasoning_content to Claude's thinking_blocks
+                    choice.message.thinking_blocks = self._convert_reasoning_to_thinking_blocks(
+                        choice.message.reasoning_content
+                    )
+        
+        return model_response

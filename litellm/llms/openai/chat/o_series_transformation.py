@@ -13,6 +13,8 @@ Translations handled by LiteLLM:
 
 from typing import Any, Coroutine, List, Literal, Optional, Union, cast, overload
 
+import httpx
+
 import litellm
 from litellm import verbose_logger
 from litellm.constants import (
@@ -30,7 +32,7 @@ from litellm.types.llms.openai import (
     ChatCompletionUserMessage,
     OpenAIChatCompletionChoices,
 )
-from litellm.types.utils import Choices
+from litellm.types.utils import Choices, ModelResponse, StreamingChoices
 from litellm.utils import (
     supports_function_calling,
     supports_parallel_function_calling,
@@ -249,6 +251,53 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
         return super()._map_openai_params(
             non_default_params, optional_params, model, drop_params
         )
+
+    def transform_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        model_response: ModelResponse,
+        logging_obj: Any,
+        request_data: dict,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        encoding: Any,
+        api_key: Optional[str] = None,
+        json_mode: Optional[bool] = None,
+    ) -> ModelResponse:
+        """
+        Override to add thinking_blocks conversion after response parsing.
+        
+        This ensures reasoning_content from O-series is converted to thinking_blocks
+        for Claude API compatibility.
+        """
+        # Get base transformation
+        model_response = super().transform_response(
+            model=model,
+            raw_response=raw_response,
+            model_response=model_response,
+            logging_obj=logging_obj,
+            request_data=request_data,
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            encoding=encoding,
+            api_key=api_key,
+            json_mode=json_mode,
+        )
+        
+        # Add thinking_blocks conversion for each choice (non-streaming only)
+        for choice in model_response.choices:
+            # Type check: ensure this is a non-streaming Choices object
+            if isinstance(choice, Choices) and choice.message:
+                if hasattr(choice.message, 'reasoning_content') and choice.message.reasoning_content:
+                    # Convert OpenAI's reasoning_content to Claude's thinking_blocks
+                    choice.message.thinking_blocks = self._convert_reasoning_to_thinking_blocks(
+                        choice.message.reasoning_content
+                    )
+        
+        return model_response
 
     def is_model_o_series_model(self, model: str) -> bool:
         model = model.split("/")[-1]  # could be "openai/o3" or "o3"
