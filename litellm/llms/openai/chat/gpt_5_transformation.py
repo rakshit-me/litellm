@@ -79,7 +79,7 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
         from litellm.utils import supports_tool_choice
 
         base_gpt_series_params = super().get_supported_openai_params(model=model)
-        gpt_5_only_params = ["reasoning_effort", "verbosity"]
+        gpt_5_only_params = ["reasoning_effort", "verbosity", "thinking"]
         base_gpt_series_params.extend(gpt_5_only_params)
         if not supports_tool_choice(model=model):
             base_gpt_series_params.remove("tool_choice")
