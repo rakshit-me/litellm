@@ -23,7 +23,14 @@ from litellm.constants import (
 )
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 from litellm.types.llms.anthropic import AnthropicThinkingParam
-from litellm.types.llms.openai import AllMessageValues, ChatCompletionUserMessage
+from litellm.types.llms.openai import (
+    AllMessageValues,
+    ChatCompletionRedactedThinkingBlock,
+    ChatCompletionThinkingBlock,
+    ChatCompletionUserMessage,
+    OpenAIChatCompletionChoices,
+)
+from litellm.types.utils import Choices
 from litellm.utils import (
     supports_function_calling,
     supports_parallel_function_calling,
@@ -93,6 +100,61 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
             return "medium"
         else:  # budget_tokens >= DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET
             return "high"
+
+    @staticmethod
+    def _convert_reasoning_to_thinking_blocks(
+        reasoning_content: Optional[str],
+    ) -> Optional[
+        List[Union[ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock]]
+    ]:
+        """
+        Convert OpenAI's reasoning_content to Claude's thinking_blocks format.
+        
+        This enables bidirectional conversion: when a request comes in with Claude's
+        thinking parameter, the response includes thinking_blocks in Claude format.
+        
+        Args:
+            reasoning_content: OpenAI's reasoning content string
+            
+        Returns:
+            thinking_blocks in Claude format, or None if no reasoning content
+        """
+        if not reasoning_content:
+            return None
+            
+        # OpenAI doesn't provide cryptographic signature, so we omit that field
+        thinking_block: ChatCompletionThinkingBlock = {
+            "type": "thinking",
+            "thinking": reasoning_content,
+        }
+        return [thinking_block]
+
+    def _transform_choices(
+        self,
+        choices: List[OpenAIChatCompletionChoices],
+        json_mode: Optional[bool] = None,
+        optional_params: Optional[dict] = None,
+    ) -> List[Choices]:
+        """
+        Override to convert reasoning_content to thinking_blocks for Claude compatibility.
+        
+        When routing Claude → O-series, we want the response to maintain Claude's format
+        with thinking_blocks so the client (like Claude Code) can display reasoning.
+        """
+        # Get base transformation
+        transformed_choices = super()._transform_choices(
+            choices, json_mode, optional_params
+        )
+        
+        # Add thinking_blocks conversion for Claude compatibility
+        for choice in transformed_choices:
+            if choice.message.reasoning_content:
+                # Convert OpenAI's reasoning_content to Claude's thinking_blocks
+                choice.message.thinking_blocks = self._convert_reasoning_to_thinking_blocks(
+                    choice.message.reasoning_content
+                )
+        
+        return transformed_choices
 
     def get_supported_openai_params(self, model: str) -> list:
         """
