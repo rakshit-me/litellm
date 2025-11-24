@@ -15,7 +15,14 @@ from typing import Any, Coroutine, List, Literal, Optional, Union, cast, overloa
 
 import litellm
 from litellm import verbose_logger
+from litellm.constants import (
+    DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET,
+    DEFAULT_REASONING_EFFORT_LOW_THINKING_BUDGET,
+    DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET,
+    DEFAULT_REASONING_EFFORT_MINIMAL_THINKING_BUDGET,
+)
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+from litellm.types.llms.anthropic import AnthropicThinkingParam
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionUserMessage
 from litellm.utils import (
     supports_function_calling,
@@ -30,6 +37,8 @@ from .gpt_transformation import OpenAIGPTConfig
 class OpenAIOSeriesConfig(OpenAIGPTConfig):
     """
     Reference: https://platform.openai.com/docs/guides/reasoning
+    
+    Handles O-series model quirks including reverse mapping thinking -> reasoning_effort.
     """
 
     @classmethod
@@ -43,6 +52,47 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
         O-series models support `developer` role.
         """
         return messages
+
+    @staticmethod
+    def _map_thinking_to_reasoning_effort(
+        thinking: Union[AnthropicThinkingParam, dict],
+    ) -> Optional[str]:
+        """
+        Reverse map Claude's thinking parameter to OpenAI's reasoning_effort.
+        
+        This is the inverse of AnthropicConfig._map_reasoning_effort().
+        
+        Args:
+            thinking: Claude's thinking parameter with type and budget_tokens
+            
+        Returns:
+            reasoning_effort string ("minimal", "low", "medium", or "high")
+        """
+        if thinking is None:
+            return None
+            
+        # Handle both dict and AnthropicThinkingParam types
+        if isinstance(thinking, dict):
+            thinking_type = thinking.get("type")
+            budget_tokens = thinking.get("budget_tokens")
+        else:
+            thinking_type = getattr(thinking, "type", None)
+            budget_tokens = getattr(thinking, "budget_tokens", None)
+            
+        # If thinking is disabled or no budget specified, return None
+        if thinking_type != "enabled" or budget_tokens is None:
+            return None
+            
+        # Map budget_tokens back to reasoning_effort levels
+        # Using the same thresholds as AnthropicConfig._map_reasoning_effort
+        if budget_tokens <= DEFAULT_REASONING_EFFORT_MINIMAL_THINKING_BUDGET:
+            return "minimal"
+        elif budget_tokens <= DEFAULT_REASONING_EFFORT_LOW_THINKING_BUDGET:
+            return "low"
+        elif budget_tokens <= DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET:
+            return "medium"
+        else:  # budget_tokens >= DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET
+            return "high"
 
     def get_supported_openai_params(self, model: str) -> list:
         """
@@ -108,6 +158,15 @@ class OpenAIOSeriesConfig(OpenAIGPTConfig):
             optional_params["max_completion_tokens"] = non_default_params.pop(
                 "max_tokens"
             )
+            
+        # Reverse map thinking -> reasoning_effort for Claude compatibility
+        # When routing Claude calls to O-series models, convert the thinking parameter
+        if "thinking" in non_default_params:
+            thinking_value = non_default_params.pop("thinking")
+            reasoning_effort = self._map_thinking_to_reasoning_effort(thinking_value)
+            if reasoning_effort is not None:
+                non_default_params["reasoning_effort"] = reasoning_effort
+                
         if "temperature" in non_default_params:
             temperature_value: Optional[float] = non_default_params.pop("temperature")
             if temperature_value is not None:
